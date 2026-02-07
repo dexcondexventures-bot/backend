@@ -20,6 +20,12 @@ exports.submitCart = async (req, res) => {
 
     const order = await submitCart(userId, mobileNumber);
 
+    // Emit real-time notification to admin
+    try {
+      const { io } = require('../index');
+      io.emit('new-order', { orderId: order.id, userId, itemCount: order.items?.length || 0 });
+    } catch (e) { /* socket emit is best-effort */ }
+
     res.status(201).json({
       success: true,
       message: "Order submitted successfully",
@@ -587,6 +593,12 @@ exports.createDirectOrder = async (req, res) => {
     console.log(`✅ [DIRECT ORDER] Successfully created order ${order.id} for user ${userId}`);
     console.log(`✅ [DIRECT ORDER] Order will now appear in data_package_dashboard`);
     
+    // Emit real-time notification to admin
+    try {
+      const { io } = require('../index');
+      io.emit('new-order', { orderId: order.id, userId, itemCount: items?.length || 0 });
+    } catch (e) { /* socket emit is best-effort */ }
+
     res.status(201).json({
       success: true,
       message: "Direct order created successfully",

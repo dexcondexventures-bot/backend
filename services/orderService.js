@@ -370,6 +370,23 @@ const getOrderStatus = async (options = {}) => {
   const transformedData = [];
   const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
   
+  // Build phone number variants for item-level filtering
+  let phoneVariantsForItemFilter = null;
+  if (phoneNumberFilter) {
+    const cleanedNumber = phoneNumberFilter.replace(/\D/g, '');
+    phoneVariantsForItemFilter = [cleanedNumber];
+    if (cleanedNumber.startsWith('0') && cleanedNumber.length === 10) {
+      phoneVariantsForItemFilter.push(cleanedNumber.substring(1));
+      phoneVariantsForItemFilter.push('233' + cleanedNumber.substring(1));
+    } else if (cleanedNumber.startsWith('233') && cleanedNumber.length === 12) {
+      phoneVariantsForItemFilter.push('0' + cleanedNumber.substring(3));
+      phoneVariantsForItemFilter.push(cleanedNumber.substring(3));
+    } else if (cleanedNumber.length === 9) {
+      phoneVariantsForItemFilter.push('0' + cleanedNumber);
+      phoneVariantsForItemFilter.push('233' + cleanedNumber);
+    }
+  }
+
   for (const order of orders) {
     const orderCreatedAt = new Date(order.createdAt).getTime();
     const isNew = orderCreatedAt > fiveMinutesAgo;
@@ -383,6 +400,15 @@ const getOrderStatus = async (options = {}) => {
       // If product filter is applied, only include items with that product
       if (selectedProduct && item.product.name !== selectedProduct) {
         continue; // Skip items that don't match the product filter
+      }
+
+      // If phone number filter is applied, only include items whose mobileNumber matches
+      if (phoneVariantsForItemFilter) {
+        const itemPhone = (item.mobileNumber || order.mobileNumber || '').replace(/\D/g, '');
+        const matchesPhone = phoneVariantsForItemFilter.some(variant => itemPhone.includes(variant));
+        if (!matchesPhone) {
+          continue; // Skip items that don't match the phone number filter
+        }
       }
       
       transformedData.push({
