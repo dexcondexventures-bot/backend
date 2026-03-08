@@ -8,7 +8,7 @@ const {
   getOrderHistory,
   updateOrderItemsStatus,
   updateSingleOrderItemStatus,
-  // orderController
+  downloadOrdersForExcel,
 } = require("../services/orderService");
 
 const orderService = require('../services/orderService');
@@ -138,6 +138,11 @@ exports.getOrderHistory = async (req, res) => {
 
     if (!userId) {
       return res.status(400).json({ error: "User ID is required" });
+    }
+
+    // Users can only view their own order history; admins can view any
+    if (req.user.role?.toUpperCase() !== 'ADMIN' && req.user.id !== userId) {
+      return res.status(403).json({ error: "You can only view your own order history" });
     }
 
     const orders = await getOrderHistory(userId);
@@ -672,5 +677,20 @@ exports.batchCompleteProcessing = async (req, res) => {
       success: false,
       message: error.message
     });
+  }
+}
+
+// Download orders for Excel and update pending to processing
+exports.downloadOrdersForExcel = async (req, res) => {
+  try {
+    const { statusFilter, selectedProduct, selectedDate, sortOrder, sourceFilter, phoneNumberFilter, orderIdFilter, startTime, endTime } = req.query;
+    const result = await downloadOrdersForExcel({
+      statusFilter, selectedProduct, selectedDate, sortOrder,
+      sourceFilter, phoneNumberFilter, orderIdFilter, startTime, endTime
+    });
+    res.json(result);
+  } catch (error) {
+    console.error('Error in downloadOrdersForExcel:', error);
+    res.status(500).json({ error: error.message });
   }
 }

@@ -484,9 +484,23 @@ const getOrderStatus = async (options = {}) => {
 const getOrderHistory = async (userId) => {
   return await prisma.order.findMany({
     where: { userId },
-    include: {
+    select: {
+      id: true,
+      userId: true,
+      createdAt: true,
+      status: true,
+      mobileNumber: true,
       items: {
-        include: { product: true }
+        select: {
+          id: true,
+          mobileNumber: true,
+          status: true,
+          quantity: true,
+          updatedAt: true,
+          product: {
+            select: { id: true, name: true, description: true, price: true }
+          }
+        }
       }
     },
     orderBy: { createdAt: "desc" }
@@ -841,6 +855,9 @@ const orderService = {
       where: { status: 'Processing' },
       data: { status: 'Completed' }
     });
+    // Invalidate cached status counts so next fetchOrders returns fresh data
+    cache.delete('order_status_counts');
+    cache.delete('order_stats');
     return { count: result.count };
   },
 
@@ -959,6 +976,119 @@ const orderService = {
 }
 };
 
+
+const downloadOrdersForExcel = async ({ statusFilter, selectedProduct, selectedDate, sortOrder, sourceFilter, phoneNumberFilter, orderIdFilter, startTime, endTime } = {}) => {
+  const where = {};
+  const itemsWhere = {};
+
+  const targetStatus = statusFilter || 'Pending';
+  itemsWhere.status = targetStatus;
+
+  if (selectedDate) {
+    const startOfDay = new Date(selectedDate);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(selectedDate);
+    endOfDay.setHours(23, 59, 59, 999);
+    if (startTime) {
+      const [h, m] = startTime.split(':');
+      startOfDay.setHours(parseInt(h), parseInt(m), 0, 0);
+    }
+    if (endTime) {
+      const [h, m] = endTime.split(':');
+      endOfDay.setHours(parseInt(h), parseInt(m), 59, 999);
+    }
+    where.createdAt = { gte: startOfDay, lte: endOfDay };
+  }
+
+  if (phoneNumberFilter) {
+    const cleanedNumber = phoneNumberFilter.replace(/\D/g, '');
+    const phoneVariants = [cleanedNumber];
+    if (cleanedNumber.startsWith('0') && cleanedNumber.length === 10) {
+      phoneVariants.push(cleanedNumber.substring(1));
+      phoneVariants.push('233' + cleanedNumber.substring(1));
+    } else if (cleanedNumber.startsWith('233') && cleanedNumber.length === 12) {
+      phoneVariants.push('0' + cleanedNumber.substring(3));
+      phoneVariants.push(cleanedNumber.substring(3));
+    } else if (cleanedNumber.length === 9) {
+      phoneVariants.push('0' + cleanedNumber);
+      phoneVariants.push('233' + cleanedNumber);
+    }
+    const phoneConditions = [];
+    phoneVariants.forEach(variant => {
+      phoneConditions.push({ mobileNumber: { contains: variant } });
+      phoneConditions.push({ items: { some: { mobileNumber: { contains: variant } } } });
+    });
+    where.OR = phoneConditions;
+  }
+
+  if (orderIdFilter) {
+    const parsedId = parseInt(orderIdFilter);
+    if (!isNaN(parsedId)) where.id = parsedId;
+  }
+
+  if (selectedProduct) {
+    itemsWhere.product = { name: selectedProduct };
+  }
+
+  if (sourceFilter === 'shop') {
+    where.user = { OR: [{ name: 'shop' }, { email: { contains: 'shop@' } }] };
+  } else if (sourceFilter === 'dashboard') {
+    where.user = { AND: [{ NOT: { name: 'shop' } }, { NOT: { email: { contains: 'shop@' } } }] };
+  }
+
+  where.items = { some: itemsWhere };
+
+  const orders = await prisma.order.findMany({
+    where,
+    orderBy: { createdAt: sortOrder === 'oldest' ? 'asc' : 'desc' },
+    include: {
+      items: {
+        where: itemsWhere,
+        include: {
+          product: { select: { id: true, name: true, description: true, price: true } }
+        }
+      },
+      user: { select: { id: true, name: true, email: true, phone: true } }
+    }
+  });
+
+  const items = [];
+  const pendingItemIds = [];
+  for (const order of orders) {
+    for (const item of order.items) {
+      items.push({
+        id: item.id,
+        orderId: order.id,
+        mobileNumber: item.mobileNumber || order.mobileNumber,
+        product: {
+          name: item.productName || item.product?.name,
+          description: item.productDescription || item.product?.description,
+          price: item.productPrice != null ? item.productPrice : item.product?.price
+        },
+        status: item.status,
+        createdAt: order.createdAt,
+        user: order.user
+      });
+      if (item.status === 'Pending') {
+        pendingItemIds.push(item.id);
+      }
+    }
+  }
+
+  let updatedCount = 0;
+  if (pendingItemIds.length > 0) {
+    const result = await prisma.orderItem.updateMany({
+      where: { id: { in: pendingItemIds } },
+      data: { status: 'Processing' }
+    });
+    updatedCount = result.count;
+    cache.delete('order_status_counts');
+    cache.delete('order_stats');
+  }
+
+  return { items, updatedCount, totalItems: items.length };
+};
+
 module.exports = {
   submitCart,
   getAllOrders,
@@ -969,6 +1099,7 @@ module.exports = {
   getOrderHistory,
   updateOrderItemsStatus,
   updateSingleOrderItemStatus,
+  downloadOrdersForExcel,
   createDirectOrder: orderService.createDirectOrder,
   getOrdersByIds: orderService.getOrdersByIds,
   batchCompleteProcessingOrders: orderService.batchCompleteProcessingOrders,
